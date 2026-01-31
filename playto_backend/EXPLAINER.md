@@ -1,15 +1,17 @@
 ## 1. The Tree (Nested Comments)
 
-Comments are modeled using a self-referential foreign key.
+Nested comments are modeled using a self-referential foreign key.
 
 - Each `Comment` belongs to a `Post`
-- Each `Comment` can optionally reference another `Comment` as its parent
+- Each `Comment` may optionally reference another `Comment` as its parent
 - Top-level comments are identified by `parent = NULL`
-- Replies are accessed using the `replies` related name
+- This structure allows arbitrary depth, similar to Reddit-style threads
 
-To avoid N+1 queries, nested comments are not loaded recursively from the database.  
-Instead, the post detail API uses `select_related` and `prefetch_related` to load the post, comments, replies, and their authors in a fixed number of queries.  
-The nested structure is then assembled in memory during serialization.
+To avoid N+1 queries, the post detail API fetches all comments for a post in a single query using `prefetch_related` and `select_related` for authors.  
+No recursive database queries are performed.
+
+The nested comment tree is constructed in memory using a single-pass algorithm that maps comments by ID and attaches each comment to its parent.  
+This guarantees predictable query counts regardless of comment depth.
 
 ---
 
@@ -17,26 +19,26 @@ The nested structure is then assembled in memory during serialization.
 
 Karma is not stored as a derived field on the user model.
 
-Each like creates a `KarmaTransaction` record containing the user, points, and timestamp.  
+Each like creates a `KarmaTransaction` record containing the user, the number of points earned, and a timestamp.  
 The leaderboard is calculated dynamically by aggregating only transactions from the last 24 hours:
 
-```python
 last_24_hours = timezone.now() - timedelta(hours=24)
 
-KarmaTransaction.objects
-    .filter(created_at__gte=last_24_hours)
-    .values('user__username')
-    .annotate(total_karma=Sum('points'))
+KarmaTransaction.objects  
+    .filter(created_at__gte=last_24_hours)  
+    .values('user__username')  
+    .annotate(total_karma=Sum('points'))  
     .order_by('-total_karma')[:5]
-```
 
-This ensures accurate, time-based results without storing daily karma on the user model.
+This approach ensures accurate, time-based results without storing daily or cached karma values on the user model.
 
 ---
 
 ## 3. The AI Audit
 
-An AI-assisted suggestion proposed loading nested comments using recursive ORM queries.
+An AI-assisted suggestion proposed serializing nested comments using recursive ORM access patterns.
 
-After reviewing this approach, it was clear that it would cause N+1 query issues as the depth of replies increased.  
-I replaced this with an explicit `select_related` and `prefetch_related` strategy and built the comment tree in memory, resulting in predictable query counts and improved performance.
+After reviewing this approach, it was clear that it could lead to N+1 query issues as comment depth increased.  
+To address this, I avoided recursive serializers and database access entirely.
+
+Instead, all comments are fetched in a single query and the nested structure is built explicitly in memory, resulting in consistent performance and clear, debuggable logic.
