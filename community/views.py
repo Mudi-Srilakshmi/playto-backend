@@ -10,7 +10,13 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 
-from .models import Post, Comment, Like, KarmaTransaction
+from .models import (
+    Post,
+    Comment,
+    PostLike,
+    CommentLike,
+    KarmaTransaction,
+)
 from .serializers import PostSerializer, LeaderboardSerializer
 
 
@@ -49,9 +55,9 @@ class PostFeedAPIView(APIView):
     def get(self, request):
         posts = (
             Post.objects
-            .select_related('author')
-            .annotate(like_count=Count('likes'))
-            .order_by('-created_at')
+            .select_related("author")
+            .annotate(like_count=Count("likes"))
+            .order_by("-created_at")
         )
 
         serializer = PostSerializer(posts, many=True)
@@ -65,18 +71,17 @@ class PostDetailAPIView(APIView):
     def get(self, request, post_id):
         post = (
             Post.objects
-            .select_related('author')
+            .select_related("author")
             .prefetch_related(
                 Prefetch(
-                    'comments',
-                    queryset=Comment.objects.select_related('author')
+                    "comments",
+                    queryset=Comment.objects.select_related("author")
                 )
             )
             .get(id=post_id)
         )
 
         post_data = PostSerializer(post).data
-
         comments = post.comments.all()
         post_data["comments"] = build_comment_tree(comments)
 
@@ -102,21 +107,33 @@ class LikeAPIView(APIView):
 
         try:
             with transaction.atomic():
+
                 if post_id:
-                    post = Post.objects.get(id=post_id)
-                    Like.objects.create(user=user, post=post)
+                    post = Post.objects.select_for_update().get(id=post_id)
+
+                    PostLike.objects.create(
+                        user=user,
+                        post=post
+                    )
 
                     KarmaTransaction.objects.create(
                         user=post.author,
-                        points=5
+                        points=5,
+                        source="POST_LIKE"
                     )
+
                 else:
-                    comment = Comment.objects.get(id=comment_id)
-                    Like.objects.create(user=user, comment=comment)
+                    comment = Comment.objects.select_for_update().get(id=comment_id)
+
+                    CommentLike.objects.create(
+                        user=user,
+                        comment=comment
+                    )
 
                     KarmaTransaction.objects.create(
                         user=comment.author,
-                        points=1
+                        points=1,
+                        source="COMMENT_LIKE"
                     )
 
         except IntegrityError:
@@ -146,13 +163,5 @@ class LeaderboardAPIView(APIView):
             .order_by("-total_karma")[:5]
         )
 
-        data = [
-            {
-                "user": row["user__username"],
-                "total_karma": row["total_karma"]
-            }
-            for row in leaderboard
-        ]
-
-        serializer = LeaderboardSerializer(data, many=True)
+        serializer = LeaderboardSerializer(leaderboard, many=True)
         return Response(serializer.data)

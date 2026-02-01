@@ -1,44 +1,56 @@
-## 1. The Tree (Nested Comments)
+# EXPLAINER.md
 
-Nested comments are modeled using a self-referential foreign key.
+## 1. Nested Comments (The Tree)
 
-- Each `Comment` belongs to a `Post`
-- Each `Comment` may optionally reference another `Comment` as its parent
-- Top-level comments are identified by `parent = NULL`
-- This structure allows arbitrary depth, similar to Reddit-style threads
+Threaded comments are implemented using a self-referential foreign key on the `Comment` model.  
+Top-level comments have `parent = NULL`, while replies reference another comment.
 
-To avoid N+1 queries, the post detail API fetches all comments for a post in a single query using `prefetch_related` and `select_related` for authors.  
-No recursive database queries are performed.
-
-The nested comment tree is constructed in memory using a single-pass algorithm that maps comments by ID and attaches each comment to its parent.  
-This guarantees predictable query counts regardless of comment depth.
+All comments for a post are fetched in a single query using `select_related` and `prefetch_related`, avoiding the N+1 query problem.  
+The nested structure is then built in memory, ensuring predictable and efficient database access even for deep comment threads.
 
 ---
 
-## 2. The Math (Leaderboard – Last 24 Hours)
+## 2. Leaderboard Calculation (Last 24 Hours)
 
-Karma is not stored as a derived field on the user model.
+Karma is tracked using an immutable `KarmaTransaction` model instead of storing aggregated values on the user model.
 
-Each like creates a `KarmaTransaction` record containing the user, the number of points earned, and a timestamp.  
-The leaderboard is calculated dynamically by aggregating only transactions from the last 24 hours:
+The leaderboard is calculated dynamically by aggregating only transactions created within the last 24 hours:
 
-last_24_hours = timezone.now() - timedelta(hours=24)
+- Filters by `created_at >= now - 24 hours`
+- Groups by user
+- Sums karma points
+- Orders by total karma
+- Returns top 5 users
 
-KarmaTransaction.objects  
-    .filter(created_at__gte=last_24_hours)  
-    .values('user__username')  
-    .annotate(total_karma=Sum('points'))  
-    .order_by('-total_karma')[:5]
-
-This approach ensures accurate, time-based results without storing daily or cached karma values on the user model.
+This approach ensures accuracy, flexibility, and compliance with the assignment constraint of not storing daily karma.
 
 ---
 
-## 3. The AI Audit
+## 3. Concurrency & Double-Like Protection
 
-An AI-assisted suggestion proposed serializing nested comments using recursive ORM access patterns.
+Likes are modeled using two explicit tables:
+- `PostLike`
+- `CommentLike`
 
-After reviewing this approach, it was clear that it could lead to N+1 query issues as comment depth increased.  
-To address this, I avoided recursive serializers and database access entirely.
+Each table enforces a database-level `UniqueConstraint` to guarantee that a user can like a post or comment only once.
 
-Instead, all comments are fetched in a single query and the nested structure is built explicitly in memory, resulting in consistent performance and clear, debuggable logic.
+All like operations are wrapped inside `transaction.atomic()` blocks, and duplicate likes are handled gracefully via `IntegrityError`.  
+This prevents race conditions and karma inflation under concurrent requests.
+
+---
+
+## 4. AI Audit
+
+An initial design used a single generic `Like` model with nullable foreign keys.  
+This was refactored into separate `PostLike` and `CommentLike` models to improve data integrity, simplify constraints, and make concurrency handling more robust.
+
+This change was made after reviewing the generated code and validating it against real-world database constraints.
+
+---
+
+## Summary
+
+- Threaded comments are efficiently modeled and fetched without N+1 queries
+- Leaderboard is calculated dynamically for the last 24 hours only
+- Concurrency and double-like issues are handled at the database and transaction levels
+- All design choices prioritize correctness, performance, and clarity
