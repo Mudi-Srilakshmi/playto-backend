@@ -122,4 +122,4 @@ EXPLAINER.md – Detailed explanation of design decisions, queries, and AI audit
 
 ## AUTHOR
 
-Srilakshmi Mudi
+Mudi Sri Lakshmi
